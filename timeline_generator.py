@@ -6,7 +6,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.ticker import FixedLocator, FuncFormatter
-from matplotlib.transforms import blended_transform_factory
 import textwrap
 
 def set_defaults(options):
@@ -127,8 +126,8 @@ def get_timeline(
     if "options" not in data.columns:
         data["options"] = [{} for _ in range(len(data))]
 
-    data["options"] = data.apply(lambda row: set_defaults(row.options), axis=1)
-    data_options = pd.DataFrame(data.options.tolist(), index=data.index)
+    data["options"] = data["options"].apply(set_defaults)
+    data_options = pd.DataFrame(data["options"].tolist(), index=data.index)
 
     for column in data_options.columns:
         # Option columns from the CSV have been normalized inside row_to_options()
@@ -397,23 +396,41 @@ class XAxisCompressor:
 def safe_text(value):
     return "" if value is None or pd.isna(value) else str(value)
 
+def wrap_text(
+    value,
+    width,
+    break_long_words=True,
+    break_on_hyphens=True,
+):
+    """Convert a value to safe text and wrap it onto multiple lines."""
+    text = safe_text(value)
+
+    if not text:
+        return ""
+
+    try:
+        width = int(width)
+    except (TypeError, ValueError):
+        return text
+
+    if width <= 0:
+        return text
+
+    wrapped = textwrap.wrap(
+        text,
+        width=width,
+        break_long_words=break_long_words,
+        break_on_hyphens=break_on_hyphens,
+    )
+
+    return "\n".join(wrapped) if wrapped else text
+
 def annotate(ax, row):
     title = safe_text(row.get("title"))
     description = safe_text(row.get("description"))
 
-    wrapped_title = "\n".join(
-        textwrap.wrap(
-            title,
-            width=row["text_wrap"],
-        )
-    )
-
-    wrapped_description = "\n".join(
-        textwrap.wrap(
-            description,
-            width=row["text_wrap"],
-        )
-    )
+    wrapped_title = wrap_text(title, row["text_wrap"])
+    wrapped_description = wrap_text(description, row["text_wrap"])
 
     plot_start = row.get("plot_start_datetime", row.get("start_datetime"))
     plot_end = row.get("plot_end_datetime", row.get("end_datetime"))
@@ -681,14 +698,12 @@ def _format_tick_label(timestamp, dateformat, wrap_width=None):
     if wrap_width <= 0:
         return label
 
-    wrapped = textwrap.wrap(
+    return wrap_text(
         label,
-        width=wrap_width,
+        wrap_width,
         break_long_words=False,
         break_on_hyphens=False,
     )
-
-    return "\n".join(wrapped) if wrapped else label
 
 def _get_locator(granularity, interval):
     if granularity == "minutes":
@@ -820,6 +835,26 @@ def _draw_xaxis_breaks(
         )
 
 
+def normalize_legend_item(label, markerfmt=None, color=None):
+    """
+    Normalize one legend entry and apply marker/color defaults through set_defaults().
+    """
+    legend_options = {}
+
+    if not _is_missing(markerfmt) and str(markerfmt).strip() != "":
+        legend_options["markerfmt"] = str(markerfmt).strip()
+
+    if not _is_missing(color) and str(color).strip() != "":
+        legend_options["color"] = str(color).strip()
+
+    legend_defaults = set_defaults(legend_options)
+
+    return {
+        "label": str(label).strip(),
+        "markerfmt": legend_defaults["markerfmt"],
+        "color": legend_defaults["color"],
+    }
+
 def add_custom_legend(
     ax,
     legend_items,
@@ -877,32 +912,16 @@ def add_custom_legend(
         current_y -= row_spacing * 1.2
 
     for item in legend_items:
-        label = item.get("label", "")
-
-        # Reuse set_defaults() for legend marker/color defaults.
-        # The legend now uses the same names as event options:
-        #   markerfmt
-        #   color
-        legend_options = {}
-
-        markerfmt_value = item.get("markerfmt")
-        color_value = item.get("color")
-
-        if not _is_missing(markerfmt_value) and str(markerfmt_value).strip() != "":
-            legend_options["markerfmt"] = str(markerfmt_value).strip()
-
-        if not _is_missing(color_value) and str(color_value).strip() != "":
-            legend_options["color"] = str(color_value).strip()
-
-        legend_defaults = set_defaults(legend_options)
-
-        markerfmt = legend_defaults["markerfmt"]
-        color = legend_defaults["color"]
+        legend_item = normalize_legend_item(
+            item.get("label", ""),
+            markerfmt=item.get("markerfmt"),
+            color=item.get("color"),
+        )
 
         legend_ax.text(
             label_x,
             current_y,
-            str(label),
+            legend_item["label"],
             fontsize=fontsize,
             va="center",
             ha="left",
@@ -912,10 +931,10 @@ def add_custom_legend(
         legend_ax.plot(
             marker_x,
             current_y,
-            marker=markerfmt,
-            color=color,
-            markerfacecolor=color,
-            markeredgecolor=color,
+            marker=legend_item["markerfmt"],
+            color=legend_item["color"],
+            markerfacecolor=legend_item["color"],
+            markeredgecolor=legend_item["color"],
             markersize=markersize,
             linestyle="None",
             transform=legend_ax.transAxes,
@@ -1040,22 +1059,12 @@ def load_legend_csv(csv_file):
         if _is_missing(label) or str(label).strip() == "":
             continue
 
-        legend_options = {}
-
-        if not _is_missing(row["markerfmt"]) and str(row["markerfmt"]).strip() != "":
-            legend_options["markerfmt"] = str(row["markerfmt"]).strip()
-
-        if not _is_missing(row["color"]) and str(row["color"]).strip() != "":
-            legend_options["color"] = str(row["color"]).strip()
-
-        legend_defaults = set_defaults(legend_options)
-
         legend_items.append(
-            {
-                "label": str(label).strip(),
-                "markerfmt": legend_defaults["markerfmt"],
-                "color": legend_defaults["color"],
-            }
+            normalize_legend_item(
+                label,
+                markerfmt=row["markerfmt"],
+                color=row["color"],
+            )
         )
 
     return legend_items
